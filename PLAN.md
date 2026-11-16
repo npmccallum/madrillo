@@ -49,7 +49,7 @@ behavior, ignored test, absent runner, or unimplemented path is not a pass.
 | C03 | Startup and first output | Prepare endpoint/logs/scope before authorized execution; immediate output/exit retained; gated pre-Start EOF launches nothing |
 | C04 | Independent lifetime | In captured pipe/terminal modes, workload survives foreground/detached client exit, crash, and terminal disconnect; monitor independent of caller session/job; passthrough documents its external I/O owner |
 | C05 | Reconnection | Initial connection and later endpoint attach work; no replay race or unbounded historical backlog |
-| C06 | Input ownership | One writer, bounded observers, release on disconnect, explicit pipe EOF; retained writer survives zero clients; Ctrl-D remains bytes |
+| C06 | Shared input | Every input attachment may write, bounded observers, release of one client on disconnect or InputEnd, explicit pipe EOF; retained writer survives zero clients; Ctrl-D remains bytes |
 | C07 | Workload descendants | Force stop, leader exit, and timeout clean the supported workload scope; fork races and grandchildren are tested on every host. Linux/Windows cover changed groups and daemonization. macOS covers descendants remaining in the managed workload process group; escape tests demonstrate the documented boundary |
 | C08 | Reaping and result | Preserve leader native exit/signal/full Windows code and exit time; reap owned/adopted children; no fake success or stale-PID kill |
 | C09 | Terminal mode | Native PTY/ConPTY, controlling terminal/session, initial size, resize, interactive shell/job control, detach/reattach, drain/teardown |

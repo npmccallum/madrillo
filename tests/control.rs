@@ -459,14 +459,18 @@ impl Client {
         }
         Ok(output)
     }
-    fn send(&mut self, message: ClientMessage) -> Result<(), Box<dyn std::error::Error>> {
+    /// A request as a frame.
+    fn frame(message: ClientMessage) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let data = serde_json::to_vec(&Request {
             version: PROTOCOL_VERSION,
             message,
         })?;
         let mut frame = u32::try_from(data.len())?.to_be_bytes().to_vec();
         frame.extend_from_slice(&data);
-        self.raw(&frame)
+        Ok(frame)
+    }
+    fn send(&mut self, message: ClientMessage) -> Result<(), Box<dyn std::error::Error>> {
+        self.raw(&Self::frame(message)?)
     }
     fn raw(&mut self, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let mut written = 0;
@@ -825,35 +829,46 @@ fn force_stops_grandchildren_and_concurrent_forks() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn every_input_attachment_reaches_the_workload() -> Result<(), Box<dyn std::error::Error>> {
+    let mut monitor = Monitor::spawn("echo")?;
+    let mut first = monitor.connect()?;
+    first.attach(true)?;
+    let mut second = monitor.connect()?;
+    second.attach(true)?;
+    for (index, bytes) in [b"one\0\xff".to_vec(), b"two\x04".to_vec()]
+        .into_iter()
+        .enumerate()
+    {
+        let writer = if index == 0 { &mut first } else { &mut second };
+        writer.send(ClientMessage::Input {
+            bytes: bytes.clone(),
+        })?;
+        let expected = ServerMessage::Output {
+            stream: "stdout".into(),
+            bytes,
+        };
+        assert_eq!(first.next()?, expected);
+        assert_eq!(second.next()?, expected);
+    }
+    // CloseInput is administrative and closes the workload's input for both.
+    second.send(ClientMessage::CloseInput)?;
+    // Everything the workload echoed has been read, so each is told next.
+    for client in [&mut first, &mut second] {
+        assert!(matches!(client.next()?, ServerMessage::Completed { result }
+            if result.cause == CompletionCause::LeaderExit));
+    }
+    monitor.wait()
+}
+
+#[test]
 fn detach_releases_writer_without_closing_child_input() -> Result<(), Box<dyn std::error::Error>> {
     let mut monitor = Monitor::spawn("echo")?;
     let mut first = monitor.connect()?;
     first.attach(true)?;
-    let payload = b"hello\0\xff\x04".to_vec();
-    first.send(ClientMessage::Input {
-        bytes: payload.clone(),
-    })?;
-    assert_eq!(
-        first.next()?,
-        ServerMessage::Output {
-            stream: "stdout".into(),
-            bytes: payload.clone()
-        }
-    );
     let mut second = monitor.connect()?;
-    second.send(ClientMessage::Attach {
-        input: true,
-        streams: Vec::new(),
-    })?;
-    assert!(matches!(
-        second.next()?,
-        ServerMessage::Error {
-            code: ErrorCode::InputOwned,
-            ..
-        }
-    ));
-    drop(first);
     second.attach(true)?;
+    drop(first);
+    let payload = b"still open\0\xff\x04".to_vec();
     second.send(ClientMessage::Input {
         bytes: payload.clone(),
     })?;
@@ -876,10 +891,20 @@ fn input_end_releases_writer_and_keeps_output_attached() -> Result<(), Box<dyn s
     let mut monitor = Monitor::spawn("echo")?;
     let mut first = monitor.connect()?;
     first.attach(true)?;
-    first.send(ClientMessage::InputEnd)?;
     let mut second = monitor.connect()?;
     second.attach(true)?;
-    let bytes = b"new writer\0\xff\x04".to_vec();
+    first.send(ClientMessage::InputEnd)?;
+    first.send(ClientMessage::Input {
+        bytes: b"released".to_vec(),
+    })?;
+    assert!(matches!(
+        first.next()?,
+        ServerMessage::Error {
+            code: ErrorCode::InputOwned,
+            ..
+        }
+    ));
+    let bytes = b"other writer\0\xff\x04".to_vec();
     second.send(ClientMessage::Input {
         bytes: bytes.clone(),
     })?;
@@ -927,6 +952,33 @@ fn observer_limit_preserves_existing_control() -> Result<(), Box<dyn std::error:
     monitor.wait()
 }
 
+/// Input sent after a Terminate is answered that the input is closed, not that
+/// the client never had permission to send it.
+#[test]
+fn input_after_terminate_is_answered_input_closed_never_input_owned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut monitor = Monitor::spawn("sleep")?;
+    let mut writer = monitor.connect()?;
+    writer.attach(true)?;
+    // Both requests in one write: the monitor takes one request from a client
+    // in each turn, so the Terminate is handled first.
+    let mut frames = Client::frame(ClientMessage::Terminate)?;
+    frames.extend(Client::frame(ClientMessage::Input {
+        bytes: b"after terminate".to_vec(),
+    })?);
+    writer.raw(&frames)?;
+    assert!(matches!(
+        writer.next()?,
+        ServerMessage::Error {
+            code: ErrorCode::InputClosed,
+            ..
+        }
+    ));
+    assert!(matches!(writer.next()?, ServerMessage::Completed { result }
+        if result.cause == CompletionCause::Forced));
+    monitor.wait()
+}
+
 #[test]
 fn administrative_eof_does_not_require_taking_the_active_writer()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -956,7 +1008,7 @@ fn administrative_eof_does_not_require_taking_the_active_writer()
         if result.leader == (madrillo::LeaderResult::Exit { code: 0 })
             && result.cause == CompletionCause::LeaderExit)
     );
-    // Keep the original data owner connected throughout the EOF transition.
+    // Keep the input attachment connected throughout the EOF transition.
     assert!(matches!(writer.next()?, ServerMessage::Completed { .. }));
     monitor.wait()
 }

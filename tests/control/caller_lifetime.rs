@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use super::{Client, ClientMessage, ErrorCode, ServerMessage};
+use super::{Client, ClientMessage, ServerMessage};
 use madrillo::{CleanupResult, CompletionCause, LeaderResult};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::{
@@ -234,23 +234,7 @@ fn caller_loss_preserves_pipe_and_terminal() -> Result<()> {
                 }
                 assert!(!root.path().join("state/result.json").exists());
                 let mut client = Client::connect(&caller.endpoint)?;
-                let deadline = Instant::now() + Duration::from_secs(3);
-                loop {
-                    client.send(ClientMessage::Attach {
-                        input: true,
-                        streams: Vec::new(),
-                    })?;
-                    match client.next()? {
-                        ServerMessage::Attached { input: true } => break,
-                        ServerMessage::Error {
-                            code: ErrorCode::InputOwned,
-                            ..
-                        } if Instant::now() < deadline => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        response => return Err(format!("reattachment failed: {response:?}").into()),
-                    }
-                }
+                client.attach(true)?;
                 // Pipe input has no console translation on Windows.
                 let workload_newline = if cfg!(windows) && terminal {
                     "\r"
