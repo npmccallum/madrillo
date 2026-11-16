@@ -103,8 +103,9 @@ bits. An inherited initial connection remains a caller-transferred capability.
 
 `CloseInput` is an administrative request available to any authenticated peer,
 like `Terminate`. It closes pipe input after already accepted bytes drain,
-even when an attachment still owns input. Only the owner may send input bytes;
-detach and ordinary client EOF still release ownership without closing the
+even when attachments still send input. Every attachment that asked for input
+may send input bytes, written in the order the monitor services their messages; a client that did not ask for input is rejected. `InputEnd`, detach
+and ordinary client EOF release only that client without closing the
 workload's input. Terminal input cannot be half-closed.
 
 On Unix, `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT` received by Madrillo are
@@ -178,7 +179,7 @@ inherited `--control` channel receives the first live output without a client
 handshake. Later clients use `--listen`, or the default `STATE/control.sock` on
 Unix and `\\.\pipe\madrillo-PID` on Windows. Attachments receive live output,
 and retained logs provide history. Detaching
-releases input ownership while the monitor keeps the workload's input open.
+releases that client's input while the monitor keeps the workload's input open.
 The optional `--start-gated` waits for explicit caller authorization when external
 placement must finish before workload execution. See `madrillo --help` for the
 complete option list.

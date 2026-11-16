@@ -79,7 +79,7 @@ struct Cli {
     /// Wait for Start on the initial channel before executing the workload.
     #[arg(long, requires = "control")]
     start_gated: bool,
-    /// Give the initial attachment input ownership.
+    /// Let the initial attachment send input.
     #[arg(long)]
     stdin: bool,
     /// Allocate a native host terminal. Pipe capture remains the default.
@@ -780,7 +780,7 @@ fn supervise(
             .is_some_and(|seconds| started.elapsed() >= Duration::from_secs(seconds))
         {
             result.cause = CompletionCause::TimedOut;
-            connections.release_owner();
+            connections.release();
             break;
         }
         thread::sleep(Duration::from_millis(5));
@@ -891,7 +891,7 @@ fn service(
     for (id, message) in connections.poll()? {
         match message {
             ClientMessage::Attach { input, streams } => connections.attach(id, input, streams)?,
-            ClientMessage::Input { bytes } if connections.owns_input(id) => {
+            ClientMessage::Input { bytes } if connections.may_send_input(id) => {
                 if let Err(error) = input.enqueue(&bytes) {
                     let code = if error.kind() == io::ErrorKind::WouldBlock {
                         ErrorCode::ResourceLimit
@@ -908,15 +908,13 @@ fn service(
                 "a terminal has no input half-close; send terminal EOF bytes instead",
             )?,
             // Closing pipe input is administrative control, like Terminate.
-            // All peers are authenticated; data writes still require ownership.
+            // All peers are authenticated; data writes still require an input attachment.
             ClientMessage::CloseInput => input.close_after_flush(),
-            ClientMessage::Input { .. } => connections.error(
-                id,
-                ErrorCode::InputOwned,
-                "attach with input ownership first",
-            )?,
+            ClientMessage::Input { .. } => {
+                connections.error(id, ErrorCode::InputOwned, "attach with input first")?
+            }
             ClientMessage::Terminate => {
-                connections.release_owner();
+                connections.release();
                 force = true;
             }
             ClientMessage::Wait => {}

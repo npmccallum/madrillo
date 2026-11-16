@@ -26,7 +26,6 @@ pub(crate) struct Connections {
     listener: Option<Listener>,
     clients: Vec<Client>,
     next_id: u64,
-    owner: Option<u64>,
     released: bool,
     extra_streams: Vec<String>,
 }
@@ -41,6 +40,8 @@ struct Client {
     outgoing: Vec<u8>,
     written: usize,
     attached: Option<Vec<String>>,
+    /// May send `Input`; any number of clients can hold this at once.
+    input: bool,
     dead: bool,
 }
 
@@ -64,6 +65,7 @@ impl Client {
             outgoing: Vec::new(),
             written: 0,
             attached: None,
+            input: false,
             dead: false,
         })
     }
@@ -230,10 +232,8 @@ impl Connections {
     pub(crate) fn initial(&mut self, stream: Stream, input: bool) -> io::Result<()> {
         let mut client = Client::new(0, stream)?;
         client.attached = Some(Vec::new());
+        client.input = input;
         self.clients.push(client);
-        if input {
-            self.owner = Some(0);
-        }
         Ok(())
     }
     pub(crate) fn initial_alive(&self) -> bool {
@@ -270,7 +270,6 @@ impl Connections {
             listener,
             clients: Vec::new(),
             next_id: 1,
-            owner: None,
             released: false,
             extra_streams,
         })
@@ -314,14 +313,6 @@ impl Connections {
                 Err(_) => client.dead = true,
             }
         }
-        // Release EOF/disconnects observed in this turn before servicing a
-        // replacement attachment accepted in the same turn.
-        if self
-            .owner
-            .is_some_and(|id| !self.clients.iter().any(|c| c.id == id && !c.dead))
-        {
-            self.owner = None;
-        }
         Ok(messages)
     }
 
@@ -338,25 +329,18 @@ impl Connections {
         {
             return self.error(id, ErrorCode::InvalidRequest, "unknown stream");
         }
-        if input && self.owner.is_some_and(|owner| owner != id) {
-            return self.error(id, ErrorCode::InputOwned, "another client owns input");
-        }
-        if input {
-            self.owner = Some(id);
-        } else if self.owner == Some(id) {
-            self.owner = None;
-        }
         if let Some(client) = self.clients.iter_mut().find(|c| c.id == id) {
             client.attached = Some(streams);
+            client.input = input;
         }
         self.send(id, ServerMessage::Attached { input })
     }
-    pub(crate) fn owns_input(&self, id: u64) -> bool {
-        self.owner == Some(id)
+    pub(crate) fn may_send_input(&self, id: u64) -> bool {
+        self.clients.iter().any(|c| c.id == id && c.input)
     }
     pub(crate) fn release_input(&mut self, id: u64) {
-        if self.owner == Some(id) {
-            self.owner = None;
+        if let Some(client) = self.clients.iter_mut().find(|c| c.id == id) {
+            client.input = false;
         }
     }
     pub(crate) fn send(&mut self, id: u64, message: ServerMessage) -> Result<(), FrameError> {
@@ -401,8 +385,7 @@ impl Connections {
         Ok(())
     }
     // Force and timeout stop waiting for slow clients, so the log drains.
-    pub(crate) fn release_owner(&mut self) {
-        self.owner = None;
+    pub(crate) fn release(&mut self) {
         self.released = true;
     }
     pub(crate) fn output_ready(&mut self) -> bool {
@@ -422,52 +405,6 @@ impl Connections {
         self.clients
             .iter()
             .any(|c| !c.dead && c.written < c.outgoing.len())
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disconnect_releases_input_before_same_turn_attachment()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let endpoint = root.path().join("control.sock");
-        let mut connections = Connections::bind(Some(&endpoint), Vec::new())?;
-        let (original, monitor) = std::os::unix::net::UnixStream::pair()?;
-        connections.initial(
-            interprocess::os::unix::uds_local_socket::Stream::from(monitor).into(),
-            true,
-        )?;
-        let mut replacement = std::os::unix::net::UnixStream::connect(endpoint)?;
-        replacement.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
-        let request = serde_json::to_vec(&Request {
-            version: PROTOCOL_VERSION,
-            message: ClientMessage::Attach {
-                input: true,
-                streams: Vec::new(),
-            },
-        })?;
-        replacement.write_all(&u32::try_from(request.len())?.to_be_bytes())?;
-        replacement.write_all(&request)?;
-        drop(original);
-        let messages = connections.poll()?;
-        assert_eq!(messages.len(), 1);
-        let (id, ClientMessage::Attach { input, streams }) =
-            messages.into_iter().next().ok_or("missing attachment")?
-        else {
-            return Err("unexpected request".into());
-        };
-        connections.attach(id, input, streams)?;
-        connections.poll()?;
-        let mut header = [0; 4];
-        replacement.read_exact(&mut header)?;
-        let mut payload = vec![0; usize::try_from(u32::from_be_bytes(header))?];
-        replacement.read_exact(&mut payload)?;
-        let response: Response = serde_json::from_slice(&payload)?;
-        assert_eq!(response.message, ServerMessage::Attached { input: true });
-        Ok(())
     }
 }
 

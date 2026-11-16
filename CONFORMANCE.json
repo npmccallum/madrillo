@@ -85,8 +85,8 @@
     },
     {
       "id": "C06",
-      "behavior": "Input ownership",
-      "criterion": "One writer, bounded observers, release on disconnect, explicit pipe EOF; retained writer survives zero clients; Ctrl-D remains bytes",
+      "behavior": "Shared input",
+      "criterion": "Every input attachment may write, bounded observers, release of one client on disconnect or InputEnd, explicit pipe EOF; retained writer survives zero clients; Ctrl-D remains bytes",
       "status": "ready",
       "tests": [
         "current-tests"
@@ -586,6 +586,7 @@
         "test native_arguments_are_not_shell_interpreted ... ok",
         "test native_non_unicode_arguments_environment_and_cwd_survive_both_launch_modes ... ok",
         "test spawn_failure_is_retained_without_fake_success ... ok",
+        "test every_input_attachment_reaches_the_workload ... ok",
         "test detach_releases_writer_without_closing_child_input ... ok",
         "test draining_viewer_survives_a_large_startup_burst ... ok",
         "test missing_exit_command_preserves_the_retained_workload_result ... ok",
