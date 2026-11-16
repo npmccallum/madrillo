@@ -274,8 +274,10 @@ the tracer can postpone OS thread exit, so its lifetime is not the shutdown
 deadline. The result must explicitly report truncated/incomplete logging.
 The ordinary blocked diagnostic-pipe test runs natively on every host and
 requires monitor exit as well as retained timeout/flush errors. C14 is ready to
-execute with those cases, stalled-viewer isolation, explicit client-capacity
-rejection and blocked-child-input force/timeout coverage. Source review bounds
+execute with those cases, stalled-viewer force, explicit client-capacity
+rejection and blocked-child-input force/timeout coverage. As in conmon, a slow
+attached client holds back workload output and is not cut off; force and
+timeout end that wait. Source review bounds
 capture/live queues to sixteen 8 KiB chunks, input to 64 KiB pending bytes,
 clients to 32 and each client's pending delivery to 1 MiB. Blocking log work has
 one worker; capture workers and Windows final-delivery workers have fixed bounds.
