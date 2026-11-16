@@ -761,6 +761,65 @@ fn slow_viewer_receives_complete_output() -> Result<(), Box<dyn std::error::Erro
     monitor.wait()
 }
 
+/// Ready sockets and a reading guest must not incur a timer wait per fragment.
+#[cfg(unix)]
+#[test]
+fn ready_io_does_not_wait_between_small_frames() -> Result<(), Box<dyn std::error::Error>> {
+    const SIZE: usize = 2 * 1024 * 1024;
+    let (mut monitor, mut reader) = Monitor::initial_command(
+        &[env!("CARGO_BIN_EXE_madrillo-fixture"), "echo"],
+        false,
+        &[],
+        15,
+    )?;
+    assert!(matches!(reader.next()?, ServerMessage::Prepared { .. }));
+    assert!(matches!(reader.next()?, ServerMessage::Started { .. }));
+    let mut writer = monitor.connect()?;
+    writer.send(ClientMessage::Attach {
+        input: true,
+        streams: vec!["stderr".into()],
+    })?;
+    assert!(matches!(
+        writer.next()?,
+        ServerMessage::Attached { input: true }
+    ));
+    let frame = Client::frame(ClientMessage::Input {
+        bytes: vec![0xa5; 8192],
+    })?;
+    let close = Client::frame(ClientMessage::CloseInput)?;
+    let sender = std::thread::spawn(move || -> io::Result<()> {
+        // Kernel backpressure, with no test-side sleep between fragments.
+        // The monitor's watchdog also bounds a failed blocking sender.
+        writer.stream.native.set_nonblocking(false)?;
+        for _ in 0..SIZE / 8192 {
+            writer.stream.write_all(&frame)?;
+        }
+        writer.stream.write_all(&close)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let received = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut total = 0;
+        loop {
+            match reader.next_with_timeout(deadline.saturating_duration_since(Instant::now()))? {
+                ServerMessage::Output { bytes, .. } => {
+                    assert!(bytes.iter().all(|byte| *byte == 0xa5));
+                    total += bytes.len();
+                }
+                ServerMessage::Completed { result } => {
+                    assert_eq!(result.leader, madrillo::LeaderResult::Exit { code: 0 });
+                    assert_eq!(total, SIZE);
+                    return Ok(());
+                }
+                other => return Err(format!("unexpected bulk response: {other:?}").into()),
+            }
+        }
+    })();
+    let sent = sender.join().map_err(|_| "bulk sender panicked")?;
+    received?;
+    sent?;
+    monitor.wait()
+}
+
 /// More input than the monitor's queue and the pipe hold, sent while the
 /// workload is not reading, waits with its sender and is not refused.
 #[test]

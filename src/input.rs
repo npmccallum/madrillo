@@ -19,6 +19,16 @@ pub(crate) struct Input {
 }
 
 impl Input {
+    /// Watch the writer only while buffered or held input needs delivery.
+    #[cfg(unix)]
+    pub(crate) fn writable(&self, held: bool) -> Option<nix::poll::PollFd<'_>> {
+        use std::os::fd::AsFd;
+        (held || self.written < self.pending.len())
+            .then_some(self.writer.as_ref())
+            .flatten()
+            .map(|writer| nix::poll::PollFd::new(writer.as_fd(), nix::poll::PollFlags::POLLOUT))
+    }
+
     #[cfg(unix)]
     pub(crate) fn terminal(file: std::fs::File) -> Self {
         Self {

@@ -203,6 +203,40 @@ impl Client {
 }
 
 impl Connections {
+    /// Wake for eligible native I/O instead of delaying every partial frame.
+    /// The short timeout still services capture workers and process state.
+    #[cfg(unix)]
+    pub(crate) fn wait(&self, input: &Input) -> io::Result<()> {
+        use nix::poll::{PollFd, PollFlags, poll};
+        use std::os::fd::AsFd;
+        let full = self.held_bytes() >= MAX_HELD_BYTES;
+        let mut descriptors = Vec::with_capacity(self.clients.len() + 2);
+        if let Some(listener) = &self.listener {
+            let Listener::UdSocket(listener) = listener;
+            descriptors.push(PollFd::new(listener.as_fd(), PollFlags::POLLIN));
+        }
+        for client in self.clients.iter().filter(|client| !client.dead) {
+            let mut events = PollFlags::empty();
+            if !(self.holding.iter().any(|(id, _)| *id == client.id) || client.input && full) {
+                events |= PollFlags::POLLIN;
+            }
+            if client.written < client.outgoing.len() {
+                events |= PollFlags::POLLOUT;
+            }
+            if !events.is_empty() {
+                let Stream::UdSocket(stream) = &client.stream.native;
+                descriptors.push(PollFd::new(stream.as_fd(), events));
+            }
+        }
+        if let Some(writer) = input.writable(!self.holding.is_empty()) {
+            descriptors.push(writer);
+        }
+        match poll(&mut descriptors, 5u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub(crate) fn close_listener(&mut self) {
         self.listener = None;
     }

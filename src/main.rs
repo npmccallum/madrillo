@@ -781,6 +781,12 @@ fn supervise(
             connections.release();
             break;
         }
+        #[cfg(unix)]
+        if let Err(error) = connections.wait(&input) {
+            cleanup_errors.push(format!("wait for workload I/O: {error}"));
+            break;
+        }
+        #[cfg(windows)]
         thread::sleep(Duration::from_millis(5));
     }
     if let Err(error) = child.force() {
