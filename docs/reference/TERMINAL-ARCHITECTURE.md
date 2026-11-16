@@ -309,10 +309,11 @@ No logs RPC, database, replay cursor, or duplicate in-memory history is needed.
 The former drop-on-queue-full logging default is withdrawn. Use bounded
 backpressure for a slow healthy sink; report write failures and explicit caps.
 Conmon does not promise lossless logging through disk failure. Isolate blocking
-sink work so control/deadline handling remains responsive, and disconnect slow
-viewers independently. Dillo's console-device overflow policy is a separate
-boundary: bounded memory, uninterrupted execution, and lossless output under
-an indefinitely blocked sink cannot all be promised. Do not silently attribute
+sink work so control/deadline handling remains responsive. As in conmon, slow
+attached clients hold back output until force or timeout. Dillo's
+console-device overflow policy is a separate boundary: bounded memory,
+uninterrupted execution, and lossless output under an indefinitely blocked
+sink cannot all be promised. Do not silently attribute
 device-level loss to successful monitor logging. Build pipes remain independent.
 
 File following uses normal file positions and rotation identity; report retention

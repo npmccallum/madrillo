@@ -195,8 +195,9 @@ not need an emulation layer.
 
 Pichi reads the selected persistent destination, including journal queries when
 configured. No history exists with `none` or passthrough. Retain live attachment
-without a replay backlog; files/journal remain the history source. Slow-viewer
-isolation is separate from log-sink pressure.
+without a replay backlog; files/journal remain the history source. As in
+conmon, slow attached clients hold back the workload's output; force and
+timeout still end the wait.
 
 ## Service notification and activation
 

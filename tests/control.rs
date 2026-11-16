@@ -706,6 +706,41 @@ fn slow_console_owner_receives_complete_output() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn slow_viewer_receives_complete_output() -> Result<(), Box<dyn std::error::Error>> {
+    let (mut monitor, mut initial) = Monitor::initial_command(
+        &[
+            env!("CARGO_BIN_EXE_madrillo-fixture"),
+            "burst-exit",
+            "1048576",
+        ],
+        true,
+        &[],
+        20,
+    )?;
+    assert!(matches!(initial.next()?, ServerMessage::Prepared { .. }));
+    let mut viewer = monitor.connect()?;
+    viewer.attach(false)?;
+    initial.send(ClientMessage::Start)?;
+    assert!(matches!(initial.next()?, ServerMessage::Started { .. }));
+    drop(initial);
+    let mut received = 0;
+    let result = loop {
+        match viewer.next()? {
+            ServerMessage::Output { bytes, .. } => {
+                assert!(bytes.iter().all(|byte| *byte == b'x'));
+                received += bytes.len();
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            ServerMessage::Completed { result } => break result,
+            _ => {}
+        }
+    };
+    assert_eq!(received, 1024 * 1024);
+    assert_eq!(result.leader, madrillo::LeaderResult::Exit { code: 0 });
+    monitor.wait()
+}
+
+#[test]
 fn stalled_console_owner_does_not_block_force() -> Result<(), Box<dyn std::error::Error>> {
     let (mut monitor, mut owner) = Monitor::initial_with_flags("flood", false, &["--stdin"])?;
     assert!(matches!(owner.next()?, ServerMessage::Prepared { .. }));

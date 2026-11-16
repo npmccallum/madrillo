@@ -27,6 +27,7 @@ pub(crate) struct Connections {
     clients: Vec<Client>,
     next_id: u64,
     owner: Option<u64>,
+    released: bool,
     extra_streams: Vec<String>,
 }
 
@@ -140,7 +141,9 @@ impl Client {
             .saturating_add(frame.len())
             > MAX_PENDING_BYTES
         {
-            // A stalled viewer loses its connection, never the workload/log.
+            // Output waits for attached clients until force or timeout, so
+            // only a stalled client after that, or one that never reads its
+            // replies, gets here. It is cut off, never the workload/log.
             self.dead = true;
             return Ok(());
         }
@@ -268,6 +271,7 @@ impl Connections {
             clients: Vec::new(),
             next_id: 1,
             owner: None,
+            released: false,
             extra_streams,
         })
     }
@@ -396,19 +400,23 @@ impl Connections {
         }
         Ok(())
     }
+    // Force and timeout stop waiting for slow clients, so the log drains.
     pub(crate) fn release_owner(&mut self) {
         self.owner = None;
+        self.released = true;
     }
     pub(crate) fn output_ready(&mut self) -> bool {
-        self.clients
-            .iter_mut()
-            .find(|client| self.owner == Some(client.id) && !client.dead)
-            .is_none_or(|client| {
-                if client.flush().is_err() {
-                    client.dead = true;
-                }
-                client.dead || client.written == client.outgoing.len()
-            })
+        self.released
+            || self
+                .clients
+                .iter_mut()
+                .filter(|client| client.attached.is_some() && !client.dead)
+                .all(|client| {
+                    if client.flush().is_err() {
+                        client.dead = true;
+                    }
+                    client.dead || client.written == client.outgoing.len()
+                })
     }
     pub(crate) fn pending(&self) -> bool {
         self.clients
